@@ -73,9 +73,9 @@ async def token_handler(client, message):
     msg = await app.get_messages(chat_id, 796)
     user_id = message.chat.id
     if len(message.command) <= 1:
-        image_url = "https://i.postimg.cc/v8q8kGyz/startimg-1.jpg"
-        join_button = InlineKeyboardButton("Join Channel", url="https://t.me/team_spy_pro")
-        premium = InlineKeyboardButton("Get Premium", url="https://t.me/kingofpatal")   
+        image_url = "https://i.ibb.co/TB36KnqN/1000-F-565068563-j-Sz-Yovhlcrwc-VTOm05akpq-Vd-ZXdo-Oa-NE.jpg"
+        join_button = InlineKeyboardButton("Join Channel", url="https://t.me/saurabh_pro1")
+        premium = InlineKeyboardButton("Get Premium", url="https://t.me/saurabh_patel9412")   
         keyboard = InlineKeyboardMarkup([
             [join_button],   
             [premium]    
@@ -84,8 +84,8 @@ async def token_handler(client, message):
         await message.reply_photo(
             msg.photo.file_id,
             caption=(
-                "Hi 👋 Welcome, Wanna intro...?\n\n"
-                "✳️ I can save posts from channels or groups where forwarding is off. I can download videos/audio from YT, INSTA, ... social platforms\n"
+                "Hi 👋 Welcometo the Advance Content Saver Bot! 📁 \n\n"
+                "✳️ I can save posts from channels or groups where forwarding is off. I can download videos/audio from  Telegram, YT, INSTA, ... social platforms\n"
                 "✳️ Simply send the post link of a public channel. For private channels, do /login. Send /help to know more."
             ),
             reply_markup=keyboard
