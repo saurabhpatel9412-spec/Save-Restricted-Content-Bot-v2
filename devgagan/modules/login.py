@@ -129,3 +129,4 @@ async def generate_session(_, message):
     await db.set_session(user_id, string_session)
     await client.disconnect()
     await otp_code.reply("✅ Login successful!")
+
