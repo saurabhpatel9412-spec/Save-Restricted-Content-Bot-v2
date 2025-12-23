@@ -12,77 +12,152 @@
 # License: MIT License
 # ---------------------------------------------------
 
-from config import MONGO_DB
-from motor.motor_asyncio import AsyncIOMotorClient as MongoCli
-mongo = MongoCli(MONGO_DB)
-db = mongo.user_data
-db = db.users_data_db
-async def get_data(user_id):
-    x = await db.find_one({"_id": user_id})
-    return x
-async def set_thumbnail(user_id, thumb):
-    data = await get_data(user_id)
-    if data and data.get("_id"):
-        await db.update_one({"_id": user_id}, {"$set": {"thumb": thumb}})
+from pyrogram import filters, Client
+from devgagan import app
+import random
+import os
+import asyncio
+import string
+from devgagan.core.mongo import db
+from devgagan.core.func import subscribe, chk_user
+from config import API_ID as api_id, API_HASH as api_hash
+from pyrogram.errors import (
+    ApiIdInvalid,
+    PhoneNumberInvalid,
+    PhoneCodeInvalid,
+    PhoneCodeExpired,
+    SessionPasswordNeeded,
+    PasswordHashInvalid,
+    FloodWait
+)
+from datetime import datetime  # नई लाइन जोड़ी
+
+def generate_random_name(length=7):
+    characters = string.ascii_letters + string.digits
+    return ''.join(random.choice(characters) for _ in range(length))
+
+async def delete_session_files(user_id):
+    session_file = f"session_{user_id}.session"
+    memory_file = f"session_{user_id}.session-journal"
+
+    session_file_exists = os.path.exists(session_file)
+    memory_file_exists = os.path.exists(memory_file)
+
+    if session_file_exists:
+        os.remove(session_file)
+    
+    if memory_file_exists:
+        os.remove(memory_file)
+
+    if session_file_exists or memory_file_exists:
+        await db.remove_session(user_id)
+        return True
+    return False
+
+@app.on_message(filters.command("logout"))
+async def clear_db(client, message):
+    user_id = message.chat.id
+    files_deleted = await delete_session_files(user_id)
+    try:
+        await db.remove_session(user_id)
+    except Exception:
+        pass
+
+    if files_deleted:
+        await message.reply("✅ Your session data and files have been cleared from memory and disk.")
     else:
-        await db.insert_one({"_id": user_id, "thumb": thumb})
-async def set_caption(user_id, caption):
-    data = await get_data(user_id)
-    if data and data.get("_id"):
-        await db.update_one({"_id": user_id}, {"$set": {"caption": caption}})
-    else:
-        await db.insert_one({"_id": user_id, "caption": caption})
-async def replace_caption(user_id, replace_txt, to_replace):
-    data = await get_data(user_id)
-    if data and data.get("_id"):
-        await db.update_one({"_id": user_id}, {"$set": {"replace_txt": replace_txt, "to_replace": to_replace}})
-    else:
-        await db.insert_one({"_id": user_id, "replace_txt": replace_txt, "to_replace": to_replace})
-async def set_session(user_id, session):
-    data = await get_data(user_id)
-    if data and data.get("_id"):
-        await db.update_one({"_id": user_id}, {"$set": {"session": session}})
-    else:
-        await db.insert_one({"_id": user_id, "session": session})
-async def clean_words(user_id, new_clean_words):
-    data = await get_data(user_id)
-    if data and data.get("_id"):
-        existing_words = data.get("clean_words", [])
-         
-        if existing_words is None:
-            existing_words = []
-        updated_words = list(set(existing_words + new_clean_words))
-        await db.update_one({"_id": user_id}, {"$set": {"clean_words": updated_words}})
-    else:
-        await db.insert_one({"_id": user_id, "clean_words": new_clean_words})
-async def remove_clean_words(user_id, words_to_remove):
-    data = await get_data(user_id)
-    if data and data.get("_id"):
-        existing_words = data.get("clean_words", [])
-        updated_words = [word for word in existing_words if word not in words_to_remove]
-        await db.update_one({"_id": user_id}, {"$set": {"clean_words": updated_words}})
-    else:
-        await db.insert_one({"_id": user_id, "clean_words": []})
-async def set_channel(user_id, chat_id):
-    data = await get_data(user_id)
-    if data and data.get("_id"):
-        await db.update_one({"_id": user_id}, {"$set": {"chat_id": chat_id}})
-    else:
-        await db.insert_one({"_id": user_id, "chat_id": chat_id})
-async def all_words_remove(user_id):
-    await db.update_one({"_id": user_id}, {"$set": {"clean_words": None}})
-async def remove_thumbnail(user_id):
-    await db.update_one({"_id": user_id}, {"$set": {"thumb": None}})
-async def remove_caption(user_id):
-    await db.update_one({"_id": user_id}, {"$set": {"caption": None}})
-async def remove_replace(user_id):
-    await db.update_one({"_id": user_id}, {"$set": {"replace_txt": None, "to_replace": None}})
- 
-async def remove_session(user_id):
-    await db.update_one({"_id": user_id}, {"$set": {"session": None}})
-async def remove_channel(user_id):
-    await db.update_one({"_id": user_id}, {"$set": {"chat_id": None}})
-async def delete_session(user_id):
-    """Delete the session associated with the given user_id from the database."""
-    await db.update_one({"_id": user_id}, {"$unset": {"session": ""}})
- 
+        await message.reply("✅ Logged out with flag -m")
+
+# प्रीमियम स्टेटस चेक करने का नया फंक्शन
+async def check_premium_user(user_id):
+    try:
+        # डेटाबेस से यूजर ढूंढें
+        user = await db.users.find_one({"_id": user_id})
+        if not user:
+            return False, "not_registered"
+        
+        # प्रीमियम चेक
+        if not user.get("is_premium", False):
+            return False, "not_premium"
+        
+        # एक्सपायरी चेक (अगर expiry_date फील्ड है)
+        expiry_date = user.get("expiry_date") or user.get("plan_expiry")
+        if expiry_date and expiry_date < datetime.now():
+            return False, "premium_expired"
+        
+        return True, "premium_active"
+    except Exception as e:
+        return False, f"error: {str(e)}"
+
+@app.on_message(filters.command("login"))
+async def generate_session(_, message):
+    joined = await subscribe(_, message)
+    if joined == 1:
+        return
+        
+    user_id = message.chat.id
+    
+    # प्रीमियम चेक - यह नया कोड है
+    premium_status, status_msg = await check_premium_user(user_id)
+    
+    if not premium_status:
+        if status_msg == "not_registered":
+            await message.reply("❌ You are not registered. Please use /start first.")
+        elif status_msg == "not_premium":
+            await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
+        elif status_msg == "premium_expired":
+            await message.reply("⚠️ Your premium plan has expired. Please renew to use login.")
+        else:
+            await message.reply("❌ An error occurred. Please try again later.")
+        return
+    # प्रीमियम चेक समाप्त
+    
+    # बाकी का कोड वही रहेगा
+    number = await _.ask(user_id, 'Please enter your phone number along with the country code. \nExample: +19876543210', filters=filters.text)   
+    phone_number = number.text
+    try:
+        await message.reply("📲 Sending OTP in Telegram.....")
+        client = Client(f"session_{user_id}", api_id, api_hash)
+        
+        await client.connect()
+    except Exception as e:
+        await message.reply(f"❌ Failed to send OTP {e}. Please wait and try again later.")
+    try:
+        code = await client.send_code(phone_number)
+    except ApiIdInvalid:
+        await message.reply('❌ Invalid combination of API ID and API HASH. Please restart the session.')
+        return
+    except PhoneNumberInvalid:
+        await message.reply('❌ Invalid phone number. Please restart the session.')
+        return
+    try:
+        otp_code = await _.ask(user_id, "Please check for an OTP in your official Telegram account. Once received, enter the OTP in the following format: \nIf the OTP is `12345`, please enter it as `1 2 3 4 5`.", filters=filters.text, timeout=600)
+    except TimeoutError:
+        await message.reply('⏰ Time limit of 10 minutes exceeded. Please restart the session.')
+        return
+    phone_code = otp_code.text.replace(" ", "")
+    try:
+        await client.sign_in(phone_number, code.phone_code_hash, phone_code)
+                
+    except PhoneCodeInvalid:
+        await message.reply('❌ Invalid OTP. Please restart the session.')
+        return
+    except PhoneCodeExpired:
+        await message.reply('❌ Expired OTP. Please restart the session.')
+        return
+    except SessionPasswordNeeded:
+        try:
+            two_step_msg = await _.ask(user_id, 'Your account has two-step verification enabled. Please enter your password.', filters=filters.text, timeout=300)
+        except TimeoutError:
+            await message.reply('⏰ Time limit of 5 minutes exceeded. Please restart the session.')
+            return
+        try:
+            password = two_step_msg.text
+            await client.check_password(password=password)
+        except PasswordHashInvalid:
+            await two_step_msg.reply('❌ Invalid password. Please restart the session.')
+            return
+    string_session = await client.export_session_string()
+    await db.set_session(user_id, string_session)
+    await client.disconnect()
+    await otp_code.reply("✅ Login successful!")
