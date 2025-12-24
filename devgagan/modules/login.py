@@ -12,75 +12,72 @@
 # License: MIT License
 # ---------------------------------------------------
 
-from pyrogram import filters, Client
-from devgagan import app
-import random
+# --- (Only include/replace the generate_session handler in your file) ---
 import os
-import asyncio
-import string
-from devgagan.core.mongo import db
-from devgagan.core.func import subscribe, chk_user
-from config import API_ID as api_id, API_HASH as api_hash
-from pyrogram.errors import (
-    ApiIdInvalid,
-    PhoneNumberInvalid,
-    PhoneCodeInvalid,
-    PhoneCodeExpired,
-    SessionPasswordNeeded,
-    PasswordHashInvalid,
-    FloodWait
-)
+from datetime import datetime, timezone
 
-def generate_random_name(length=7):
-    characters = string.ascii_letters + string.digits
-    return ''.join(random.choice(characters) for _ in range(length))  # Editted ... 
+from motor.motor_asyncio import AsyncIOMotorClient
+from pyrogram import Client, filters
+from pyrogram.errors import (ApiIdInvalid, PhoneNumberInvalid, PhoneCodeInvalid,
+                             PhoneCodeExpired, SessionPasswordNeeded, PasswordHashInvalid)
 
-async def delete_session_files(user_id):
-    session_file = f"session_{user_id}.session"
-    memory_file = f"session_{user_id}.session-journal"
+# create a simple motor client (reuse if your project already has a shared client)
+MONGO_URI = os.getenv("MONGO_DB")  # make sure this env var is set
+_mongo_client = AsyncIOMotorClient(MONGO_URI) if MONGO_URI else None
+_mongo_db = _mongo_client.get_default_database() if _mongo_client else None
+_premium_coll = _mongo_db.get_collection("premium") if _mongo_db else None
 
-    session_file_exists = os.path.exists(session_file)
-    memory_file_exists = os.path.exists(memory_file)
-
-    if session_file_exists:
-        os.remove(session_file)
-    
-    if memory_file_exists:
-        os.remove(memory_file)
-
-    # Delete session from the database
-    if session_file_exists or memory_file_exists:
-        await db.remove_session(user_id)
-        return True  # Files were deleted
-    return False  # No files found
-
-@app.on_message(filters.command("logout"))
-async def clear_db(client, message):
-    user_id = message.chat.id
-    files_deleted = await delete_session_files(user_id)
-    try:
-        await db.remove_session(user_id)
-    except Exception:
-        pass
-
-    if files_deleted:
-        await message.reply("✅ Your session data and files have been cleared from memory and disk.")
-    else:
-        await message.reply("✅ Logged out with flag -m")
-        
-    
 @app.on_message(filters.command("login"))
 async def generate_session(_, message):
+    # ensure user joined required channel / checks (existing code)
     joined = await subscribe(_, message)
     if joined == 1:
         return
-        
-    # user_checked = await chk_user(message, message.from_user.id)
-    # if user_checked == 1:
-        # return
-        
-    user_id = message.chat.id   
-    
+
+    user_id = message.chat.id
+
+    # --- PREMIUM CHECK: if not premium, block login with the requested message ---
+    try:
+        if _premium_coll is None:
+            # If DB not configured, be conservative and block (or you can allow)
+            await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
+            return
+
+        prem_doc = await _premium_coll.find_one({"user_id": int(user_id)})
+        if not prem_doc:
+            await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
+            return
+
+        # if expires_at exists, check expiry
+        expires = prem_doc.get("expires_at")
+        if expires is not None:
+            # handle both datetime or ISO string stored values
+            if isinstance(expires, str):
+                try:
+                    expires_dt = datetime.fromisoformat(expires)
+                except Exception:
+                    # If can't parse, block access (safer)
+                    await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
+                    return
+            else:
+                expires_dt = expires
+
+            # ensure timezone-aware comparison (assume stored in UTC or naive UTC)
+            now = datetime.now(timezone.utc)
+            if expires_dt.tzinfo is None:
+                # make naive datetime as UTC
+                expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+
+            if expires_dt <= now:
+                await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
+                return
+    except Exception:
+        # On DB errors, be conservative and block access (you can change to allow)
+        await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
+        return
+    # --- END PREMIUM CHECK ---
+
+    # --- existing login flow continues below ---
     number = await _.ask(user_id, 'Please enter your phone number along with the country code. \nExample: +19876543210', filters=filters.text)   
     phone_number = number.text
     try:
@@ -129,4 +126,4 @@ async def generate_session(_, message):
     await db.set_session(user_id, string_session)
     await client.disconnect()
     await otp_code.reply("✅ Login successful!")
-
+# --- end handler ---
