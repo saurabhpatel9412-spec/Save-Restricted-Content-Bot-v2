@@ -16,17 +16,15 @@
 # Modified parts: create TelegramClient instances but don't .start() them at import time.
 # Start them inside restrict_bot() with try/except to avoid FloodWait crash.
 
-import asyncio
+# devgagan package init — no event loop operations at import time.
 import logging
 import time
+import os
 from pyrogram import Client
-from pyrogram.enums import ParseMode 
+from pyrogram.enums import ParseMode
 from config import API_ID, API_HASH, BOT_TOKEN, STRING, MONGO_DB, DEFAULT_SESSION
 from telethon import TelegramClient, errors as telethon_errors
 from motor.motor_asyncio import AsyncIOMotorClient
-
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
 
 logging.basicConfig(
     format="[%(levelname) 5s/%(asctime)s] %(name)s: %(message)s",
@@ -35,6 +33,7 @@ logging.basicConfig(
 
 botStartTime = time.time()
 
+# Pyrogram bot client (do NOT .run() or .start() here)
 app = Client(
     "pyrobot",
     api_id=API_ID,
@@ -44,65 +43,74 @@ app = Client(
     parse_mode=ParseMode.MARKDOWN
 )
 
-# Do NOT call .start(bot_token=...) at import time for Telethon.
-# Create TelegramClient instances; start them later inside an async function with proper error handling.
-sex = TelegramClient('sexrepo', API_ID, API_HASH)  # do not .start() here
-telethon_client = TelegramClient('telethon_session', API_ID, API_HASH)  # do not .start() here
+# Telethon clients: create but DO NOT start them here.
+sex = TelegramClient('sexrepo', API_ID, API_HASH)
+telethon_client = TelegramClient('telethon_session', API_ID, API_HASH)
 
-if STRING:
-    pro = Client("ggbot", api_id=API_ID, api_hash=API_HASH, session_string=STRING)
-else:
-    pro = None
+# Optional pyrogram user/client instances (do not start here)
+pro = Client("ggbot", api_id=API_ID, api_hash=API_HASH, session_string=STRING) if STRING else None
+userrbot = Client("userrbot", api_id=API_ID, api_hash=API_HASH, session_string=DEFAULT_SESSION) if DEFAULT_SESSION else None
 
-if DEFAULT_SESSION:
-    userrbot = Client("userrbot", api_id=API_ID, api_hash=API_HASH, session_string=DEFAULT_SESSION)
-else:
-    userrbot = None
-
-# MongoDB setup
+# MongoDB setup (shared)
 tclient = AsyncIOMotorClient(MONGO_DB)
-tdb = tclient["telegram_bot"]  # Your database
-token = tdb["tokens"]  # Your tokens collection
+tdb = tclient["telegram_bot"]
+token = tdb["tokens"]
 
-# TTL index stuff remains the same
-async def create_ttl_index():
-    """Ensure the TTL index exists for the `tokens` collection."""
-    await token.create_index("expires_at", expireAfterSeconds=0)
-
-async def setup_database():
-    await create_ttl_index()
-    print("MongoDB TTL index created.")
-
-async def restrict_bot():
-    global BOT_ID, BOT_NAME, BOT_USERNAME
-    await setup_database()
+# Startup/shutdown helpers (to be called from a single async entrypoint)
+async def start_clients():
+    """Start pyrogram/telethon clients safely from one async context."""
+    # Start Pyrogram main app
     await app.start()
-    getme = await app.get_me()
-    BOT_ID = getme.id
-    BOT_USERNAME = getme.username
-    BOT_NAME = f"{getme.first_name} {getme.last_name}" if getme.last_name else getme.first_name
-    
-    # Start pyrogram-based clients if present
+    # start optional pyrogram clients
     if pro:
-        await pro.start()
+        try:
+            await pro.start()
+        except Exception as e:
+            print(f"Warning: failed to start pro client: {e}")
     if userrbot:
-        await userrbot.start()
+        try:
+            await userrbot.start()
+        except Exception as e:
+            print(f"Warning: failed to start userrbot: {e}")
 
-    # Start Telethon clients safely, catch FloodWaitError so it doesn't crash the whole app
+    # Start Telethon clients with error handling to avoid crashing on FloodWait
     try:
         await sex.start(bot_token=BOT_TOKEN)
-        print("Telethon 'sex' client started.")
     except telethon_errors.FloodWaitError as e:
-        print(f"Telethon FloodWait when starting 'sex' client: wait for {e.seconds} seconds. Skipping start to avoid crash.")
+        print(f"Telethon FloodWait for 'sex' client: {e.seconds}s — skipping start for now.")
     except Exception as e:
         print(f"Failed to start Telethon 'sex' client: {e}")
 
     try:
         await telethon_client.start(bot_token=BOT_TOKEN)
-        print("Telethon 'telethon_client' started.")
     except telethon_errors.FloodWaitError as e:
-        print(f"Telethon FloodWait when starting 'telethon_client': wait for {e.seconds} seconds. Skipping start to avoid crash.")
+        print(f"Telethon FloodWait for 'telethon_client': {e.seconds}s — skipping start for now.")
     except Exception as e:
         print(f"Failed to start Telethon 'telethon_client': {e}")
 
-loop.run_until_complete(restrict_bot())
+async def stop_clients():
+    """Stop/shutdown clients cleanly."""
+    try:
+        if telethon_client.is_connected():
+            await telethon_client.disconnect()
+    except Exception as e:
+        print(f"Error disconnecting telethon_client: {e}")
+    try:
+        if sex.is_connected():
+            await sex.disconnect()
+    except Exception as e:
+        print(f"Error disconnecting sex client: {e}")
+    try:
+        if pro:
+            await pro.stop()
+    except Exception as e:
+        print(f"Error stopping pro: {e}")
+    try:
+        if userrbot:
+            await userrbot.stop()
+    except Exception as e:
+        print(f"Error stopping userrbot: {e}")
+    try:
+        await app.stop()
+    except Exception as e:
+        print(f"Error stopping app: {e}")
