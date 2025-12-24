@@ -11,35 +11,39 @@
 # Version: 2.0.5
 # License: MIT License
 # ---------------------------------------------------
+# Replace the top of file or the generate_session handler to use shared DB and avoid creating a new motor client.
 
-# --- (Only include/replace the generate_session handler in your file) ---
 import os
 from datetime import datetime, timezone
 
-from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, filters
 from pyrogram.errors import (ApiIdInvalid, PhoneNumberInvalid, PhoneCodeInvalid,
                              PhoneCodeExpired, SessionPasswordNeeded, PasswordHashInvalid)
 
-# create a simple motor client (reuse if your project already has a shared client)
-MONGO_URI = os.getenv("MONGO_DB")  # make sure this env var is set
-_mongo_client = AsyncIOMotorClient(MONGO_URI) if MONGO_URI else None
-_mongo_db = _mongo_client.get_default_database() if _mongo_client else None
-_premium_coll = _mongo_db.get_collection("premium") if _mongo_db else None
+# Use the shared DB from devgagan package instead of creating a new motor client here.
+# devgagan/__init__.py defines: tclient, tdb, token
+from devgagan import tdb
+
+# get premium collection from the shared database (tdb)
+_premium_coll = None
+if tdb is not None:
+    try:
+        _premium_coll = tdb.get_collection("premium")
+    except Exception:
+        _premium_coll = None
 
 @app.on_message(filters.command("login"))
 async def generate_session(_, message):
-    # ensure user joined required channel / checks (existing code)
     joined = await subscribe(_, message)
     if joined == 1:
         return
 
     user_id = message.chat.id
 
-    # --- PREMIUM CHECK: if not premium, block login with the requested message ---
+    # --- PREMIUM CHECK: if not premium, block login with message ---
     try:
         if _premium_coll is None:
-            # If DB not configured, be conservative and block (or you can allow)
+            # If DB not configured or collection not available, block by default
             await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
             return
 
@@ -48,36 +52,32 @@ async def generate_session(_, message):
             await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
             return
 
-        # if expires_at exists, check expiry
         expires = prem_doc.get("expires_at")
         if expires is not None:
-            # handle both datetime or ISO string stored values
+            # Accept both datetime and ISO string formats
             if isinstance(expires, str):
                 try:
                     expires_dt = datetime.fromisoformat(expires)
                 except Exception:
-                    # If can't parse, block access (safer)
                     await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
                     return
             else:
                 expires_dt = expires
 
-            # ensure timezone-aware comparison (assume stored in UTC or naive UTC)
             now = datetime.now(timezone.utc)
             if expires_dt.tzinfo is None:
-                # make naive datetime as UTC
                 expires_dt = expires_dt.replace(tzinfo=timezone.utc)
 
             if expires_dt <= now:
                 await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
                 return
     except Exception:
-        # On DB errors, be conservative and block access (you can change to allow)
+        # On DB errors, be conservative and block access
         await message.reply("❌ This feature is only available for premium users. Please upgrade to premium to use login.")
         return
     # --- END PREMIUM CHECK ---
 
-    # --- existing login flow continues below ---
+    # Existing login flow continues (unchanged)...
     number = await _.ask(user_id, 'Please enter your phone number along with the country code. \nExample: +19876543210', filters=filters.text)   
     phone_number = number.text
     try:
@@ -87,6 +87,7 @@ async def generate_session(_, message):
         await client.connect()
     except Exception as e:
         await message.reply(f"❌ Failed to send OTP {e}. Please wait and try again later.")
+        return
     try:
         code = await client.send_code(phone_number)
     except ApiIdInvalid:
@@ -126,4 +127,3 @@ async def generate_session(_, message):
     await db.set_session(user_id, string_session)
     await client.disconnect()
     await otp_code.reply("✅ Login successful!")
-# --- end handler ---
